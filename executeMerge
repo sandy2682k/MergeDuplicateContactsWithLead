@@ -1,0 +1,60 @@
+public with sharing class MergeDuplicateContactsWithLead {
+
+    public static void executeMerge() {
+        List<Contact> contactsToMerge = new List<Contact>();
+
+        //Identify duplicate contacts based on email addresses
+        Map<String, List<Contact>> emailToContactsMap = new Map<String, List<Contact>>();
+        for (Contact contact : [SELECT Id, Email FROM Contact WHERE Email IN (SELECT Email FROM Lead) AND Email != NULL]) {
+            if (!emailToContactsMap.containsKey(contact.Email)) {
+                // If the email is not already in the map, add it with a list containing the contact
+                emailToContactsMap.put(contact.Email, new List<Contact>{ contact });
+            } else {
+                // If the email is already in the map, add the contact to the existing list
+                emailToContactsMap.get(contact.Email).add(contact);
+            }
+        }
+
+        //  Merge duplicate contacts with corresponding leads
+        for (List<Contact> duplicateContacts : emailToContactsMap.values()) {
+            if (duplicateContacts.size() > 1) {
+                // Find the most recent contact based on CreatedDate
+                Contact mostRecentContact = duplicateContacts[0];
+                for (Contact contact : duplicateContacts) {
+                    if (contact.CreatedDate > mostRecentContact.CreatedDate) {
+                        mostRecentContact = contact;
+                    }
+                }
+                // Add all duplicate contacts (except the most recent one) to the list for merging
+                contactsToMerge.addAll(duplicateContacts.remove(mostRecentContact));
+            }
+        }
+
+        // Merge duplicate contacts with leads
+        if (!contactsToMerge.isEmpty()) {
+            Map<String, Lead> emailToLeadMap = new Map<String, Lead>();
+            for (Lead lead : [SELECT Id, Email FROM Lead WHERE Email IN :contactsToMerge]) {
+                // Create a map of lead emails to leads for easy lookup during merge
+                emailToLeadMap.put(lead.Email, lead);
+            }
+
+            List<Database.MergeRequest> mergeRequests = new List<Database.MergeRequest>();
+            for (Contact contactToMerge: contactsToMerge) {
+                if (emailToLeadMap.containsKey(contactToMerge.Email)) {
+                    // Create merge requests for contacts that have corresponding leads
+                    mergeRequests.add(new Database.MergeRequest(contactToMerge, emailToLeadMap.get(contactToMerge.Email)));
+                }
+            }
+
+            // Split merge requests into batches of 200 or fewer
+            Integer batchSize = 200;
+            Integer numBatches = (mergeRequests.size() + batchSize - 1) / batchSize;
+            for (Integer i = 0; i < numBatches; i++) {
+                Integer startIndex = i * batchSize;
+                Integer endIndex = Math.min(startIndex + batchSize, mergeRequests.size());
+                // Perform the merge, not allOrNone
+                Database.merge(mergeRequests.subList(startIndex, endIndex), false);
+            }
+        }
+    }
+}
